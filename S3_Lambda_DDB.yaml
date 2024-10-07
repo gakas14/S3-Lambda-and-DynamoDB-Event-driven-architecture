@@ -1,0 +1,152 @@
+Description: This project is one to create a s3 bucket, a lambda function, a dynamo db table, and an IAM role via cloudformation templete. When a object is upload into s3, s3 notification will trigger the lambda function that will save the object metadata into a dynamo db table.
+
+Parameters:
+  
+  InputBucketName:
+    Type: String
+    Default: ak-s3-lambda-dynamo-object
+
+  InputDDBTableName:
+    Type: String
+    Default: FileMedadataTB
+
+  LambdaIAMAccessRole:
+    Type: String
+    Default: S3DDBLambdaAccessRoleObject
+
+  LambdaFunctionName:
+    Type: String
+    Default: S3DDBLambdaFunctionObject
+
+
+Resources:
+
+  InputS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref InputBucketName
+
+      
+  DDBtable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref InputDDBTableName
+      AttributeDefinitions:
+      - AttributeName: ID
+        AttributeType: S
+      KeySchema:
+      - AttributeName: ID
+        KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  IAMLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaIAMAccessRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: lambdaS3ReadOnlyAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject 
+                Resource: !Sub arn:aws:s3:::${InputBucketName}/*
+
+        - PolicyName: lambdaDynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadWriteTable
+                Effect: Allow
+                Action:
+                 - dynamodb:BatchGetItem
+                 - dynamodb:GetItem
+                 - dynamodb:Query
+                 - dynamodb:Scan
+                 - dynamodb:BatchWriteItem
+                 - dynamodb:PutItem
+                 - dynamodb:UpdateItem
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBtable}
+              - Sid: GetStreamRecords
+                Effect: Allow 
+                Action: dynamodb:GetRecords
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBtable}
+              - Sid: WriteLogStreamsAndGroups
+                Effect: Allow
+                Action:
+                 - logs:CreateLogStream
+                 - logs:PutLogEvents
+                Resource: "*"
+              - Sid: CreateLogGroup
+                Effect: Allow
+                Action: logs:CreateLogGroup
+                Resource: "*"
+      Description: Thid role is for lambda to read a file from S3 and then Write into Dynamo DB.
+
+  ImportFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: This lambda function is trigger by an input from S3 and then write into Dynamo DB.
+      FunctionName: !Ref LambdaFunctionName
+      Code: 
+        ZipFile: |
+          import boto3
+          import os
+          from uuid import uuid4
+
+          s3 = boto3.client("s3")
+          dynamodb = boto3.resource("dynamodb")
+
+          def lambda_handler(event, context):
+            for record in event['Records']:
+              #print(record)
+              bucket_name = record['s3']['bucket']['name']
+              object_key = record['s3']['object']['key']
+              size = record['s3']['object'].get('size', -1)
+              event_name = record ['eventName']
+              event_time = record['eventTime']
+              # print(object_key)
+              # print(bucket_name)
+              # print(size)
+              # print(event_time)
+              # print(event_name)
+              dynamoTable = dynamodb.Table(os.environ['DDBtable'])
+      
+              dynamoTable.put_item(
+                 Item={'ID': str(uuid4()), 'Bucket': bucket_name, 'Object': object_key,'Size': size, 'Event': event_name, 'EventTime': event_time})
+
+
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 90
+      Environment:
+        Variables:
+          DDBtable: !Ref DDBtable
+      Role: !GetAtt IAMLambdaRole.Arn
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
